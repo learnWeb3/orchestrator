@@ -1,0 +1,65 @@
+Metadata-Version: 2.4
+Name: orchestration-agent
+Version: 0.1.0
+Summary: Decoupled, opt-in orchestration agent with skill loading and provider abstraction
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: typing-extensions>=4.0
+Provides-Extra: openai
+Requires-Dist: openai>=1.50; extra == "openai"
+Provides-Extra: mongodb
+Requires-Dist: motor>=3.0; extra == "mongodb"
+Provides-Extra: redis
+Requires-Dist: redis>=5.0; extra == "redis"
+Provides-Extra: mcp
+Requires-Dist: fastmcp>=2.0; extra == "mcp"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: python-dotenv>=1.0; extra == "dev"
+Provides-Extra: all
+Requires-Dist: orchestration-agent[mcp,mongodb,openai,redis]; extra == "all"
+
+# orchestration-agent
+
+Decoupled, opt-in orchestration agent implementing `AGENT_ORCHESTRATION_SPEC.md`:
+skill loading from `SKILL.md` files, an OpenAI provider, external tool execution,
+token tracking, retries, rate limiting, and pluggable conversation history
+(in-memory + MongoDB).
+
+See the plan/spec for full design rationale and the list of intentional
+corrections made to the spec's pseudocode when it didn't match the real OpenAI
+API (`src/orchestration_agent/provider/openai_provider.py` and
+`src/orchestration_agent/agent.py` docstrings).
+
+## Setup
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[openai,mongodb,redis,dev]"
+docker compose up -d   # mongodb + redis, for integration tests
+```
+
+`.env` must define `OPENAI_API_KEY` (see `.env.example` for the full list of
+variables used by tests/examples).
+
+## Run
+
+```bash
+.venv/bin/pytest -q                 # unit + live OpenAI + docker-backed tests
+.venv/bin/python examples/basic_usage.py   # end-to-end demo against gpt-5.4-mini
+docker compose down
+```
+
+## Layout
+
+- `src/orchestration_agent/` — the library (agent loop, provider, skills, tools,
+  conversation history, rate limiting, logging).
+- `skills/` — example `SKILL.md` files (`code-review`, `sql-analysis`).
+- `examples/basic_usage.py` — real end-to-end run against `gpt-5.4-mini`.
+- `tests/` — unit tests (no network) plus integration tests gated on Docker
+  services / `OPENAI_API_KEY` being available.

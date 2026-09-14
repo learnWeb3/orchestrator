@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestration-agent"
+version = "0.1.0"
+description = "Decoupled, opt-in orchestration agent with skill loading and provider abstraction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "typing-extensions>=4.0",
+]
+
+[project.optional-dependencies]
+openai = [
+    "openai>=1.50",
+]
+mongodb = [
+    "motor>=3.0",
+]
+redis = [
+    "redis>=5.0",
+]
+mcp = [
+    "fastmcp>=2.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "python-dotenv>=1.0",
+]
+all = [
+    "orchestration-agent[openai,mongodb,redis,mcp]",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
