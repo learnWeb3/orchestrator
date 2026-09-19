@@ -27,15 +27,28 @@ class BaseProvider(ABC):
         model: str,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        structured_output: Optional[Type[BaseModel]] = None,
+        structured_output: Optional[Union[Type[BaseModel], Dict[str, Any]]] = None,
+        structured_output_name: Optional[str] = None,
         stream: bool = False,
         tools: Optional[List["BaseTool"]] = None,
         **kwargs: Any,
     ) -> Union[CompletionResponse, AsyncIterator[CompletionResponse]]:
         """Generate a completion from the LLM.
 
+        `structured_output` binds the provider's native structured-output
+        mechanism, and may be either a Pydantic model (the caller's
+        `response_schema`) or a raw JSON Schema `dict` (a skill's declared
+        `output`, section 6) — `structured_output_name` names the schema in
+        the latter case. The orchestrator, not the provider, validates the
+        result against the schema (spec section 6, "Validation at the
+        boundary").
+
         Raises:
             RateLimitError: if rate limited (429).
             TemporaryProviderError: on a temporary error (500, 503).
-            StructuredOutputValidationError: if output doesn't match `structured_output`.
+            ModelRefusalError: on a content refusal on a schema-bound
+                completion — never a malformed-output condition.
+            SchemaCompilationError: if the provider rejects `structured_output`
+                itself (a compilation/structural error), distinct from a
+                content refusal.
         """

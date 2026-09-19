@@ -1,5 +1,6 @@
 """Test doubles: a scripted BaseProvider that never hits the network."""
 
+import json
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel
@@ -27,12 +28,20 @@ class FakeProvider(BaseProvider):
         model: str,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        structured_output: Optional[Type[BaseModel]] = None,
+        structured_output: Optional[Union[Type[BaseModel], Dict[str, Any]]] = None,
+        structured_output_name: Optional[str] = None,
         stream: bool = False,
         tools: Optional[List[Any]] = None,
         **kwargs: Any,
     ) -> CompletionResponse:
-        self.calls.append({"messages": [dict(m) for m in messages]})
+        self.calls.append(
+            {
+                "messages": [dict(m) for m in messages],
+                "structured_output": structured_output,
+                "structured_output_name": structured_output_name,
+                "tools": tools,
+            }
+        )
         index = len(self.calls) - 1
         item = self.script[min(index, len(self.script) - 1)]
 
@@ -54,13 +63,17 @@ def text_response(content: str, usage: Optional[TokenUsage] = None) -> Completio
     )
 
 
+def json_response(payload: Dict[str, Any], usage: Optional[TokenUsage] = None) -> CompletionResponse:
+    """A CompletionResponse whose content is a JSON-serialized payload, as a
+    schema-bound completion would return."""
+    return text_response(json.dumps(payload), usage=usage)
+
+
 def tool_call_response(
     name: str, arguments: Dict[str, Any], call_id: str = "call_1"
 ) -> CompletionResponse:
     """A CompletionResponse requesting a single tool/skill call, with a realistic
     OpenAI-shaped `raw_message` (assistant message carrying `tool_calls`)."""
-    import json
-
     return CompletionResponse(
         content="",
         tool_calls=[ToolCall(name=name, arguments=arguments, id=call_id)],

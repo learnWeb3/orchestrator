@@ -1,10 +1,14 @@
-from .agent import AgentResponse, StepRecord
+from .agent import AgentResponse, Budget, StepRecord
 from .errors import (
     AgentError,
+    BudgetExhaustedError,
     ConversationHistoryError,
+    ModelRefusalError,
     RateLimitError,
     RateLimitExceededError,
+    ResponseValidationError,
     RetryableError,
+    SchemaCompilationError,
     SkillNotFoundError,
     StructuredOutputValidationError,
     TemporaryProviderError,
@@ -13,15 +17,21 @@ from .errors import (
 )
 from .provider import CompletionResponse, TokenUsage, ToolCall
 from .rate_limiter import RateLimiterContext, RedisRateLimiter
+from .skill_output import ErrorDetail, SkillOutput
 
 __all__ = [
     "AgentResponse",
+    "Budget",
     "StepRecord",
     "AgentError",
+    "BudgetExhaustedError",
     "ConversationHistoryError",
+    "ModelRefusalError",
     "RateLimitError",
     "RateLimitExceededError",
+    "ResponseValidationError",
     "RetryableError",
+    "SchemaCompilationError",
     "SkillNotFoundError",
     "StructuredOutputValidationError",
     "TemporaryProviderError",
@@ -32,4 +42,6 @@ __all__ = [
     "ToolCall",
     "RateLimiterContext",
     "RedisRateLimiter",
+    "ErrorDetail",
+    "SkillOutput",
 ]

@@ -8,6 +8,7 @@ Description-Content-Type: text/markdown
 Requires-Dist: pydantic>=2.0
 Requires-Dist: pyyaml>=6.0
 Requires-Dist: typing-extensions>=4.0
+Requires-Dist: jsonschema>=4.20
 Provides-Extra: openai
 Requires-Dist: openai>=1.50; extra == "openai"
 Provides-Extra: mongodb

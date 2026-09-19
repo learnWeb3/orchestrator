@@ -2,6 +2,14 @@
 name: text-summarizer
 description: Summarize a piece of text into a short, clear summary
 compatibility: "python>=3.10, openai, anthropic, ollama"
+
+output:
+  type: object
+  properties:
+    summary: { type: string, description: 3 to 5 sentence summary in plain, neutral language }
+    key_points: { type: array, items: { type: string }, description: 3 to 5 bullet-point facts or claims from the source }
+  required: [summary, key_points]
+  additionalProperties: false
 ---
 
 ## Text Summarization Instructions

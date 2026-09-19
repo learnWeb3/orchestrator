@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from orchestration_agent import Agent, StdoutLogger
+from orchestration_agent import Agent, Budget, StdoutLogger
 from orchestration_agent.provider.openai_provider import OpenAIProvider
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,15 +41,18 @@ async def main() -> None:
         ),
         skills_path=str(REPO_ROOT / "skills"),
         logger=StdoutLogger(),
-        max_steps=5,
+        budget=Budget(max_turns=5),
     )
 
     response = await agent.run(f"Review this code for security issues:\n\n{SNIPPET}")
 
-    print("\n=== Output ===")
-    print(response.output)
+    print("\n=== Response ===")
+    print(response.response)
+    print("\n=== Trace ===")
+    for entry in response.messages:
+        print(f"{entry.type}: {entry.status}")
     print("\n=== Stats ===")
-    print(f"success: {response.success}")
+    print(f"status: {response.status}")
     print(f"steps: {len(response.steps)}")
     print(f"total_tokens: {response.total_tokens}")
     print(f"token_usage: {response.token_usage}")

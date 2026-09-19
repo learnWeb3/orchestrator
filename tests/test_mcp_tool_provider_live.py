@@ -70,5 +70,5 @@ async def test_agent_round_trip_through_real_mcp_server(deepwiki_provider):
 
     response = await agent.run("What docs exist for jlowin/fastmcp?")
 
-    assert response.success is True
-    assert response.output == "Here is the documentation structure."
+    assert response.status == "success"
+    assert response.response == "Here is the documentation structure."

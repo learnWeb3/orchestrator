@@ -1,0 +1,2 @@
+[console_scripts]
+validate-skill = orchestration_agent.scripts.validate_skill:main

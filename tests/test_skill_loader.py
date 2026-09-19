@@ -24,6 +24,23 @@ Body.
 
 NO_FRONTMATTER = "Just markdown, no frontmatter at all."
 
+WITH_OUTPUT_SKILL = """---
+name: structured
+description: A skill that declares an output contract
+compatibility: "python>=3.10, openai"
+output:
+  type: object
+  properties:
+    result: { type: string }
+  required: [result]
+  additionalProperties: false
+---
+
+## Instructions
+
+Do the thing, structured.
+"""
+
 
 def test_parse_skill_file_success(tmp_path):
     skill_dir = tmp_path / "example"
@@ -37,6 +54,29 @@ def test_parse_skill_file_success(tmp_path):
     assert metadata.description == "An example skill"
     assert metadata.compatibility == "python>=3.10, openai"
     assert "Do the thing." in metadata.content
+
+
+def test_parse_skill_file_reads_output_verbatim(tmp_path):
+    path = tmp_path / "SKILL.md"
+    path.write_text(WITH_OUTPUT_SKILL)
+
+    metadata = SkillLoader().parse_skill_file(path)
+
+    assert metadata.output == {
+        "type": "object",
+        "properties": {"result": {"type": "string"}},
+        "required": ["result"],
+        "additionalProperties": False,
+    }
+
+
+def test_parse_skill_file_output_defaults_to_none(tmp_path):
+    path = tmp_path / "SKILL.md"
+    path.write_text(VALID_SKILL)
+
+    metadata = SkillLoader().parse_skill_file(path)
+
+    assert metadata.output is None
 
 
 def test_parse_skill_file_missing_field_raises(tmp_path):

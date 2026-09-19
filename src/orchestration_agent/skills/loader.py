@@ -70,6 +70,9 @@ class SkillLoader:
                 description=yaml_data["description"],
                 compatibility=yaml_data["compatibility"],
                 content=markdown_content,
+                # Read verbatim; never validated here (spec section 3 — that's the
+                # standalone offline script's job, never the runtime loader's).
+                output=yaml_data.get("output"),
             )
         except Exception as e:
             raise ValueError(f"Invalid skill metadata in {file_path}: {e}") from e

@@ -87,5 +87,5 @@ async def test_agent_invoke_tool_round_trip_through_mcp():
 
         response = await agent.run("what is 4 + 5?")
 
-        assert response.success is True
-        assert response.output == "The sum is 9."
+        assert response.status == "success"
+        assert response.response == "The sum is 9."

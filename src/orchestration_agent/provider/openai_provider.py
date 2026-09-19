@@ -20,6 +20,15 @@ pseudocode (see the implementation plan for the full rationale):
    the Responses API accepts its own output items back as input items
    directly, which is what makes follow-up `function_call_output` items valid
    against the API (see spec deviation #4).
+5. `structured_output` may be a Pydantic model (the caller's `response_schema`)
+   or a raw JSON Schema `dict` (a skill's declared `output`, orchestration
+   spec section 6) — `structured_output_name` names the schema in the latter
+   case. The provider does *not* validate the result against the schema
+   itself; that's the orchestrator's job at the boundary (section 6).
+6. A content refusal on a schema-bound completion is raised as
+   `ModelRefusalError`, distinct from the provider rejecting the schema
+   itself before any generation happens (`SchemaCompilationError`) — the
+   orchestrator falls back to prompt injection only for the latter.
 """
 
 import json
@@ -38,14 +47,16 @@ from openai import (
     APIConnectionError,
     APITimeoutError,
     AsyncOpenAI,
+    BadRequestError,
     InternalServerError,
 )
 from openai import RateLimitError as OpenAIRateLimitError
 from pydantic import BaseModel
 
 from ..models.errors import (
+    ModelRefusalError,
     RateLimitError,
-    StructuredOutputValidationError,
+    SchemaCompilationError,
     TemporaryProviderError,
 )
 from ..models.provider import CompletionResponse, TokenUsage, ToolCall
@@ -88,12 +99,14 @@ def _is_luna_model(model: str) -> bool:
 
 
 def _make_strict_json_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Recursively rewrite a Pydantic JSON schema for OpenAI's `strict` mode.
+    """Recursively rewrite a JSON Schema document for OpenAI's `strict` mode.
 
     Strict mode requires every object to set `additionalProperties: false` and
     list *all* of its properties (including optional ones) in `required` —
-    optional fields stay expressible via a nullable type, which is how Pydantic
-    already renders `Optional[...]` fields.
+    optional fields stay expressible via a nullable type. Applied unchanged to
+    both a Pydantic-derived schema and a skill's declared `output` schema
+    (orchestration spec section 4): "The same helper is used, unchanged, for
+    a skill's `output` schema."
     """
     node = dict(schema)
 
@@ -157,6 +170,22 @@ def _map_stop_reason(status: Optional[str], incomplete_reason: Optional[str]) ->
     return _STATUS_TO_STOP_REASON.get(status or "", status or "stop")
 
 
+def _extract_refusal(output_items: List[Dict[str, Any]]) -> Optional[str]:
+    """Find a content refusal among `response.output` items, if any.
+
+    Distinct from the provider rejecting the schema itself (that surfaces as
+    a `BadRequestError` before any output exists at all, handled separately
+    as `SchemaCompilationError`).
+    """
+    for item in output_items:
+        if item.get("type") != "message":
+            continue
+        for part in item.get("content", []) or []:
+            if isinstance(part, dict) and part.get("type") == "refusal":
+                return part.get("refusal") or "The model declined to generate a response."
+    return None
+
+
 class OpenAIProvider(BaseProvider):
     """OpenAI API provider (gpt-4o, gpt-5.x, o-series, ...) via the Responses API."""
 
@@ -177,7 +206,8 @@ class OpenAIProvider(BaseProvider):
         model: str,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        structured_output: Optional[Type[BaseModel]] = None,
+        structured_output: Optional[Union[Type[BaseModel], Dict[str, Any]]] = None,
+        structured_output_name: Optional[str] = None,
         stream: bool = False,
         tools: Optional[List[Any]] = None,
         **kwargs: Any,
@@ -203,12 +233,18 @@ class OpenAIProvider(BaseProvider):
         else:
             completion_params["temperature"] = temperature
 
-        if structured_output:
+        if structured_output is not None:
+            if isinstance(structured_output, dict):
+                schema_dict = _make_strict_json_schema(structured_output)
+                schema_name = structured_output_name or "output"
+            else:
+                schema_dict = _make_strict_json_schema(structured_output.model_json_schema())
+                schema_name = structured_output_name or structured_output.__name__
             completion_params["text"] = {
                 "format": {
                     "type": "json_schema",
-                    "name": structured_output.__name__,
-                    "schema": _make_strict_json_schema(structured_output.model_json_schema()),
+                    "name": schema_name,
+                    "schema": schema_dict,
                     "strict": True,
                 }
             }
@@ -227,9 +263,16 @@ class OpenAIProvider(BaseProvider):
     async def _non_stream_completion(
         self,
         params: Dict[str, Any],
-        structured_output: Optional[Type[BaseModel]],
+        structured_output: Optional[Union[Type[BaseModel], Dict[str, Any]]],
     ) -> CompletionResponse:
-        response = await self.client.responses.create(**params)
+        try:
+            response = await self.client.responses.create(**params)
+        except BadRequestError as e:
+            # A schema-compilation/structural rejection happens before any
+            # generation and is distinct from a content refusal below.
+            if structured_output is not None:
+                raise SchemaCompilationError(f"Schema rejected by provider: {e}") from e
+            raise
 
         content = response.output_text or ""
 
@@ -244,6 +287,11 @@ class OpenAIProvider(BaseProvider):
                     arguments = {}
                 tool_calls.append(ToolCall(name=item.name, arguments=arguments, id=item.call_id))
 
+        if structured_output is not None:
+            refusal = _extract_refusal(output_items)
+            if refusal is not None:
+                raise ModelRefusalError(refusal)
+
         usage = response.usage
         cache_read_tokens = None
         if usage is not None and usage.input_tokens_details is not None:
@@ -255,12 +303,6 @@ class OpenAIProvider(BaseProvider):
             cache_creation_tokens=None,  # Not applicable to OpenAI's Responses API.
             cache_read_tokens=cache_read_tokens,
         )
-
-        if structured_output and content:
-            try:
-                structured_output.model_validate_json(content)
-            except Exception as e:  # noqa: BLE001 - re-raised as our own type
-                raise StructuredOutputValidationError(str(e)) from e
 
         incomplete_reason = (
             response.incomplete_details.reason if response.incomplete_details else None

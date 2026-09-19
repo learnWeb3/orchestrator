@@ -5,6 +5,7 @@ src/orchestration_agent/agent.py
 src/orchestration_agent.egg-info/PKG-INFO
 src/orchestration_agent.egg-info/SOURCES.txt
 src/orchestration_agent.egg-info/dependency_links.txt
+src/orchestration_agent.egg-info/entry_points.txt
 src/orchestration_agent.egg-info/requires.txt
 src/orchestration_agent.egg-info/top_level.txt
 src/orchestration_agent/conversation/__init__.py
@@ -20,10 +21,13 @@ src/orchestration_agent/models/agent.py
 src/orchestration_agent/models/errors.py
 src/orchestration_agent/models/provider.py
 src/orchestration_agent/models/rate_limiter.py
+src/orchestration_agent/models/skill_output.py
 src/orchestration_agent/provider/__init__.py
 src/orchestration_agent/provider/base.py
 src/orchestration_agent/provider/errors.py
 src/orchestration_agent/provider/openai_provider.py
+src/orchestration_agent/scripts/__init__.py
+src/orchestration_agent/scripts/validate_skill.py
 src/orchestration_agent/skills/__init__.py
 src/orchestration_agent/skills/loader.py
 src/orchestration_agent/skills/models.py
@@ -36,7 +40,10 @@ src/orchestration_agent/utils/prompt.py
 src/orchestration_agent/utils/retry.py
 tests/test_agent.py
 tests/test_conversation_history.py
+tests/test_mcp_tool_provider.py
+tests/test_mcp_tool_provider_live.py
 tests/test_openai_provider_live.py
 tests/test_rate_limiter.py
 tests/test_retry.py
 tests/test_skill_loader.py
+tests/test_validate_skill.py

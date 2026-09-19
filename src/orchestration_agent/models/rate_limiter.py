@@ -25,6 +25,17 @@ class RateLimiterContext(ABC):
     def reset(self) -> None:
         """Reset rate limiter state."""
 
+    def release(self, tokens: int) -> None:
+        """Give back over-reserved tokens once actual usage is known.
+
+        Supports the reserve-then-reconcile pattern (spec section 10): a
+        caller reserves an upper-bound estimate before dispatching a provider
+        call, then reconciles the reservation down to actual usage once the
+        response returns. Concrete (not abstract) with a no-op default so
+        existing implementations don't break; override to support exact
+        reconciliation.
+        """
+
 
 class RedisRateLimiter(RateLimiterContext):
     """Redis-backed sliding-window-ish (fixed window) token bucket rate limiter.
@@ -84,3 +95,19 @@ class RedisRateLimiter(RateLimiterContext):
 
     def reset(self) -> None:
         self.redis.delete(self._minute_key(), self._hour_key())
+
+    def release(self, tokens: int) -> None:
+        if tokens <= 0:
+            return
+        minute_key = self._minute_key()
+        hour_key = self._hour_key()
+
+        # Best-effort, non-atomic (matches the fixed-window trade-off already
+        # accepted above); clamp at 0 so a release can't push a bucket negative.
+        minute_tokens = int(self.redis.get(minute_key) or 0)
+        hour_tokens = int(self.redis.get(hour_key) or 0)
+
+        pipe = self.redis.pipeline()
+        pipe.set(minute_key, max(minute_tokens - tokens, 0), keepttl=True)
+        pipe.set(hour_key, max(hour_tokens - tokens, 0), keepttl=True)
+        pipe.execute()

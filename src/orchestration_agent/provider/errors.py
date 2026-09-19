@@ -5,15 +5,19 @@ codebase shares one exception hierarchy.
 """
 
 from ..models.errors import (
+    ModelRefusalError,
     RateLimitError,
     RetryableError,
+    SchemaCompilationError,
     StructuredOutputValidationError,
     TemporaryProviderError,
 )
 
 __all__ = [
+    "ModelRefusalError",
     "RateLimitError",
     "RetryableError",
+    "SchemaCompilationError",
     "StructuredOutputValidationError",
     "TemporaryProviderError",
 ]
