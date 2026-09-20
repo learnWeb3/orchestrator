@@ -233,12 +233,25 @@ class Agent(BaseAgent):
 
         try:
             result = await tool.execute(validated_input)
-            return result.model_dump() if isinstance(result, BaseModel) else result
         except Exception as e:  # noqa: BLE001
             self.logger.error(f"Tool {tool_name} execution failed: {e}")
             return tool.error_schema(
                 error=str(e), details=f"Execution failed in {tool_name}"
             ).model_dump()
+
+        try:
+            validated_output = (
+                result
+                if isinstance(result, tool.output_schema)
+                else tool.output_schema(**result)
+                if isinstance(result, dict)
+                else tool.output_schema.model_validate(result)
+            )
+        except Exception as e:  # noqa: BLE001
+            self.logger.error(f"Tool {tool_name} output validation failed: {e}")
+            return tool.error_schema(error="Invalid tool output", details=str(e)).model_dump()
+
+        return validated_output.model_dump()
 
     # -- Skill dispatch (spec section 5) --------------------------------------
 

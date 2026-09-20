@@ -24,6 +24,7 @@ class BaseTool(ABC):
     name: str
     description: str
     input_schema: Type[BaseModel]
+    output_schema: Type[BaseModel]
     error_schema: Type[BaseModel] = BaseError
 
     @abstractmethod
@@ -31,5 +32,7 @@ class BaseTool(ABC):
         """Execute the tool with validated parameters.
 
         Raise on failure; the Agent catches and formats the error using
-        `error_schema`.
+        `error_schema`. The return value (a dict or an `output_schema`
+        instance) must validate against `output_schema`; the Agent enforces
+        this and formats a mismatch using `error_schema` as well.
         """

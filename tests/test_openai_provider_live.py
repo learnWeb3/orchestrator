@@ -57,10 +57,16 @@ class _GetTimeInput(BaseModel):
     timezone: str
 
 
+class _GetTimeOutput(BaseModel):
+    timezone: str
+    time: str
+
+
 class _GetTimeTool(BaseTool):
     name = "get_current_time"
     description = "Returns the current time for a given IANA timezone name"
     input_schema = _GetTimeInput
+    output_schema = _GetTimeOutput
 
     async def execute(self, input: _GetTimeInput) -> Dict[str, Any]:
         return {"timezone": input.timezone, "time": "12:00:00"}
@@ -204,12 +210,19 @@ class _OrderStatusInput(BaseModel):
     order_id: str = Field(..., description="The order ID to look up")
 
 
+class _OrderStatusOutput(BaseModel):
+    order_id: str
+    status: str
+    eta_days: int
+
+
 class _OrderStatusTool(BaseTool):
     """A fake/mock external API tool: no real network call, fixed payload."""
 
     name = "get_order_status"
     description = "Look up the current shipment status for a given order_id"
     input_schema = _OrderStatusInput
+    output_schema = _OrderStatusOutput
 
     def __init__(self) -> None:
         self.calls: List[str] = []

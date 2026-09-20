@@ -310,10 +310,15 @@ class _EchoInput(BaseModel):
     text: str
 
 
+class _EchoOutput(BaseModel):
+    echoed: str
+
+
 class _EchoTool(BaseTool):
     name = "echo"
     description = "Echoes back the given text"
     input_schema = _EchoInput
+    output_schema = _EchoOutput
 
     async def execute(self, input: _EchoInput) -> Dict[str, Any]:
         return {"echoed": input.text}
@@ -349,6 +354,40 @@ async def test_unregistered_tool_name_reports_error_and_continues():
     assert response.status == "success"
     tool_msg = next(m for m in agent.provider.calls[1]["messages"] if m["role"] == "tool")
     assert "Unknown tool" in tool_msg["content"]
+
+
+class _BadOutputInput(BaseModel):
+    text: str
+
+
+class _BadOutputOutput(BaseModel):
+    required_field: str
+
+
+class _BadOutputTool(BaseTool):
+    """Deliberately returns a dict that violates its own `output_schema`."""
+
+    name = "bad_output"
+    description = "Always returns a shape that doesn't match output_schema"
+    input_schema = _BadOutputInput
+    output_schema = _BadOutputOutput
+
+    async def execute(self, input: _BadOutputInput) -> Dict[str, Any]:
+        return {"wrong_field": input.text}
+
+
+async def test_tool_output_violating_output_schema_reports_error_and_continues():
+    script = [
+        tool_call_response("bad_output", {"text": "hi"}, call_id="call_y"),
+        text_response("Fallback response."),
+    ]
+    agent = make_agent(script, tools=[_BadOutputTool()])
+
+    response = await agent.run("do something")
+
+    assert response.status == "success"
+    tool_msg = next(m for m in agent.provider.calls[1]["messages"] if m["role"] == "tool")
+    assert "Invalid tool output" in tool_msg["content"]
 
 
 # -- Budget (spec section 9) -----------------------------------------------------

@@ -87,7 +87,8 @@ BaseAgent                    # plain class: construction + skill loading, NOT an
 
 BaseTool (abstract)
 ├── (caller-defined subclasses)
-└── MCPTool                  # adapts one MCP server tool; produced by MCPToolProvider
+├── MCPTool                  # adapts one MCP server tool; produced by MCPToolProvider
+└── AskUserQuestionTool      # built-in; asks the human one or more multiple-choice questions
 
 Dataclasses (models/)
 ├── SkillOutput, ErrorDetail             (models/skill_output.py)
@@ -98,7 +99,8 @@ Dataclasses (models/)
 
 Pydantic models (skills/, tools/)
 ├── SkillMetadata     (skills/models.py)
-└── BaseError         (tools/base.py)
+├── BaseError         (tools/base.py)
+└── Question, QuestionOption, AskUserQuestionInput/Output/Metadata  (tools/ask_user_question.py)
 
 SkillLoader / SkillRegistry (skills/)
 
@@ -338,12 +340,15 @@ class BaseTool(ABC):
     name: str
     description: str
     input_schema: Type[BaseModel]
+    output_schema: Type[BaseModel]
     error_schema: Type[BaseModel] = BaseError
 
     @abstractmethod
     async def execute(self, input: BaseModel) -> Any:
         """Raise on failure; Agent.invoke_tool catches and formats with error_schema."""
 ```
+
+`output_schema` is required with no default (unlike `error_schema`, which every tool inherits from `BaseTool`) — every concrete tool, hand-written or MCP-adapted, must declare what shape its result takes, since `Agent.invoke_tool` validates the return value against it before handing it back to the provider.
 
 `ToolError` and `ToolNotFoundError` are **not** defined in `tools/base.py` — they live in `models/errors.py`, alongside every other exception in this codebase, so the whole project shares one hierarchy.
 
@@ -357,16 +362,30 @@ async def invoke_tool(self, tool_name, parameters):
     tool = self.tools.get(tool_name)
     if not tool:
         raise ToolNotFoundError(f"Tool '{tool_name}' not found")
+
     try:
         validated_input = tool.input_schema(**parameters)
     except Exception as e:
         return tool.error_schema(error="Invalid parameters", details=str(e)).model_dump()
+
     try:
         result = await tool.execute(validated_input)
-        return result.model_dump() if isinstance(result, BaseModel) else result
     except Exception as e:
         return tool.error_schema(error=str(e), details=f"Execution failed in {tool_name}").model_dump()
+
+    try:
+        validated_output = (
+            result if isinstance(result, tool.output_schema)
+            else tool.output_schema(**result) if isinstance(result, dict)
+            else tool.output_schema.model_validate(result)
+        )
+    except Exception as e:
+        return tool.error_schema(error="Invalid tool output", details=str(e)).model_dump()
+
+    return validated_output.model_dump()
 ```
+
+Three independent failure points, each formatted the same way via `error_schema.model_dump()`: bad input, a raised execution error, or a result that doesn't validate against `output_schema` (whether returned as an `output_schema` instance, a plain `dict`, or anything else `model_validate` can coerce). Only a fully validated result is ever handed back to the provider.
 
 A lookup failure (`ToolNotFoundError`) and an unrecognized function name that is neither `invoke_skill` nor a registered tool are both caught in `_dispatch_round` and turned into an error `tool`-role reply — the run is not aborted. **External tool calls never appear in `AgentResponse.messages`** — only in `AgentResponse.steps` (`StepRecord.tool_calls`), which just records `{"name": ..., "arguments": ...}` for every call the provider returned that turn, skill or tool alike. A tool call never sets or clears a skill's pending output contract.
 
@@ -396,6 +415,49 @@ await mcp.aclose()
 - Each discovered tool is wrapped as an `MCPTool`, whose `input_schema` is a **lenient** Pydantic model built by `_json_schema_to_model` (best-effort field typing off the MCP tool's raw JSON Schema, `extra="allow"`, required fields kept required) — its `model_json_schema()` is overridden to return the server's original schema verbatim, so the provider sees the real schema rather than a lossy reconstruction.
 - `MCPTool.execute` calls `provider.call_tool(remote_name, arguments)` and returns, in order of preference, `result.data`, then `result.structured_content`, then the concatenated text of any text content blocks.
 - Connection failures anywhere in this lifecycle raise `MCPConnectionError`.
+
+### The built-in `question` tool (`AskUserQuestionTool`)
+
+`src/orchestration_agent/tools/ask_user_question.py` ships a `BaseTool` that lets the model ask the human one or more multiple-choice questions mid-run — to gather preferences, clarify ambiguous instructions, or offer a choice of direction. No transport/UI is implemented here: how the question actually reaches the human (terminal prompt, web socket, queue, ...) is entirely up to the embedder, supplied as a required `handler` callback. It is **not** auto-registered on every `Agent` — pass it in like any other tool: `Agent(tools=[AskUserQuestionTool(handler=...), ...])`.
+
+```python
+# src/orchestration_agent/tools/ask_user_question.py
+class QuestionOption(BaseModel):
+    label: str
+    description: str
+
+class Question(BaseModel):
+    question: str
+    header: str
+    options: List[QuestionOption] = Field(min_length=1)
+    multiple: bool
+
+class AskUserQuestionInput(BaseModel):
+    questions: List[Question] = Field(min_length=1)
+
+class AskUserQuestionMetadata(BaseModel):
+    answers: List[List[str]]
+
+class AskUserQuestionOutput(BaseModel):
+    title: str
+    output: str
+    metadata: AskUserQuestionMetadata
+
+QuestionHandler = Callable[[List[Question]], Awaitable[List[List[str]]]]
+
+class AskUserQuestionTool(BaseTool):
+    name = "question"
+    input_schema = AskUserQuestionInput
+    output_schema = AskUserQuestionOutput
+
+    def __init__(self, handler: QuestionHandler) -> None:
+        self.handler = handler
+```
+
+- `execute` calls `self.handler(input.questions)` and expects back one answer-list per question, in the same order — `multiple=False` questions still get a list (of one answer).
+- If the handler returns a different number of answer-lists than questions were asked, `execute` raises `ToolError("handler returned a mismatched number of answers")`, which `Agent.invoke_tool` catches and formats via `error_schema` exactly like any other tool execution failure — the run is not aborted.
+- On success, `output` is a human-readable rendering (`"{header}: {question}\n  -> {answers}"` per question) and `metadata.answers` carries the raw `List[List[str]]`, so a caller can consume either the summary text or the structured answers.
+- `skills/laptop-search/SKILL.md` is the worked multi-turn example in this repo: it drives a narrowing search via repeated `search_laptops` calls, using `question` to ask for missing filters or let the user pick among remaining candidates (`tests/test_laptop_search_conversation.py`).
 
 ---
 
@@ -1111,8 +1173,9 @@ orchestrator/
 │       │   ├── loader.py            # SkillLoader
 │       │   └── registry.py          # SkillRegistry
 │       ├── tools/
-│       │   ├── __init__.py          # exports BaseError, BaseTool only
+│       │   ├── __init__.py          # exports BaseError, BaseTool, AskUserQuestionTool + its models
 │       │   ├── base.py              # BaseError, BaseTool
+│       │   ├── ask_user_question.py # AskUserQuestionTool, Question(s), QuestionHandler
 │       │   └── mcp.py               # MCPToolProvider, MCPTool, MCPConnectionError (opt-in, needs fastmcp)
 │       ├── conversation/
 │       │   ├── __init__.py
@@ -1140,14 +1203,17 @@ orchestrator/
 │           └── retry.py             # default_exponential_backoff (only)
 ├── skills/                          # the actual skills this repo ships
 │   ├── text-summarizer/SKILL.md     # declares `output`
-│   └── recipe-helper/SKILL.md       # no `output` — dispatch-only
+│   ├── recipe-helper/SKILL.md       # no `output` — dispatch-only
+│   └── laptop-search/SKILL.md       # discriminated-union `output`; drives search_laptops + question tool
 ├── examples/
 │   └── basic_usage.py               # the only example that exists
 └── tests/
     ├── conftest.py                  # loads .env; redis/mongo/openai-key availability fixtures
     ├── fakes.py                     # FakeProvider + text_response/json_response/tool_call_response
     ├── test_agent.py                # the orchestration loop, end to end, against FakeProvider
+    ├── test_ask_user_question.py    # AskUserQuestionTool in isolation and through Agent
     ├── test_conversation_history.py
+    ├── test_laptop_search_conversation.py / _live.py  # multi-turn: skill + search_laptops + question tool
     ├── test_mcp_tool_provider.py / test_mcp_tool_provider_live.py
     ├── test_openai_provider_live.py
     ├── test_rate_limiter.py
@@ -1320,6 +1386,31 @@ async with MCPToolProvider("https://example.com/mcp") as mcp:
     response = await agent.run("...")
 ```
 
+### The `question` tool
+
+```python
+from orchestration_agent.tools import AskUserQuestionTool, Question
+
+async def prompt_in_terminal(questions: list[Question]) -> list[list[str]]:
+    answers = []
+    for q in questions:
+        print(f"{q.header}: {q.question}")
+        for i, opt in enumerate(q.options):
+            print(f"  {i + 1}. {opt.label} — {opt.description}")
+        choice = input("> ")
+        answers.append([q.options[int(choice) - 1].label])
+    return answers
+
+agent = Agent(
+    provider=provider,
+    system_prompt="...",
+    tools=[AskUserQuestionTool(handler=prompt_in_terminal)],
+)
+response = await agent.run("Help me pick a laptop.")
+```
+
+`prompt_in_terminal` is the `QuestionHandler`: whatever it returns becomes `metadata.answers` on the tool's result. See `skills/laptop-search/SKILL.md` for a full multi-turn flow that combines this tool with a custom `search_laptops` tool and a discriminated-union `output` schema.
+
 ### Rate limiting
 
 ```python
@@ -1419,15 +1510,16 @@ Common patterns built on top of the same primitive:
 5. A missing `skill_name` MUST produce `SkillOutput(type="invoke_skill", status="error", error.code="SKILL_NOT_FOUND")`; an unresolved one MUST produce `SkillOutput(type=<given name>, ...)` with the same code.
 6. External tools MUST be exposed to the model as their own named functions — never through a generic `invoke_tool(tool_name, tool_parameters)` wrapper — and MUST be dispatched by matching `tool_call.name` against the registered tool dict.
 7. External tool calls MUST be recorded on `AgentResponse.steps`, never on `AgentResponse.messages`, and MUST NOT set or clear a skill's pending output contract.
-8. The provider's own assistant turn (its `raw_message`) MUST be replayed verbatim once per round; each reply MUST be addressed to that call's own ID; every `tool_calls` entry MUST get a reply.
-9. Where a skill declares `output`, only the **last** output-declaring dispatch in a round MUST bind the next completion; that completion MUST be issued with `tools=None`.
-10. The bound completion's result MUST be validated (`_validate_payload`) before entering `SkillOutput.data`; on failure, exactly one repair (feeding violations back) MUST be attempted before giving up with `OUTPUT_VALIDATION_ERROR`.
-11. A provider schema-compilation rejection (`SchemaCompilationError`) MUST trigger the prompt-injection fallback invisibly (no extra `SkillOutput` entry); a content refusal (`ModelRefusalError`) MUST map to `MODEL_REFUSAL` and MUST NOT be treated as a schema rejection.
-12. `RateLimiterContext.check_and_consume` MUST be called synchronously with the step's own token estimate/delta, never the cumulative running total; `release` MUST return unused reservation.
-13. `Agent.run()`'s ordinary loop MUST reserve at least one turn (`max(budget.max_turns - 1, 0)`) for a final, tools-disabled answer, given via `_final_turn_and_finish` on budget or timeout exhaustion, with no repair attempted there.
-14. `output_schema`, where set, MUST be bound as structured output on every ordinary turn (alongside whatever tools are offered), not only on a dedicated final turn.
-15. `ConversationHistory.summarize()` MUST retrieve via `get_all`, render via `serialize_for_prompt`/`history_formatter`, and generate via the given `model_provider`, returning `"No conversation history to summarize."` without a provider call when history is empty.
-16. A run's in-flight state (`_RunState`: trace, steps, token usage) MUST be scoped to that `run()` call and MUST NOT be conflated with `ConversationHistory`.
-17. Exhausting transport-level retries (`RetryableError`) MUST surface, uncaught by anything more specific, as `status="error"`, `error.code="AGENT_ERROR"`.
-18. Multiple `invoke_skill`/tool calls in one round MUST be dispatched sequentially, in the order the provider returned them, and MUST appear in `messages`/`steps` in that same order — this implementation does not dispatch a round concurrently.
-19. `messages` MUST be append-only, ordered by dispatch, and MUST NOT be reordered, deduplicated, or removed — including failed dispatches and failed bound completions.
+8. A tool's return value MUST be validated against its `output_schema` before being handed back to the provider as the tool result; a validation failure MUST be formatted via `error_schema`, the same as an input-validation or execution failure.
+9. The provider's own assistant turn (its `raw_message`) MUST be replayed verbatim once per round; each reply MUST be addressed to that call's own ID; every `tool_calls` entry MUST get a reply.
+10. Where a skill declares `output`, only the **last** output-declaring dispatch in a round MUST bind the next completion; that completion MUST be issued with `tools=None`.
+11. The bound completion's result MUST be validated (`_validate_payload`) before entering `SkillOutput.data`; on failure, exactly one repair (feeding violations back) MUST be attempted before giving up with `OUTPUT_VALIDATION_ERROR`.
+12. A provider schema-compilation rejection (`SchemaCompilationError`) MUST trigger the prompt-injection fallback invisibly (no extra `SkillOutput` entry); a content refusal (`ModelRefusalError`) MUST map to `MODEL_REFUSAL` and MUST NOT be treated as a schema rejection.
+13. `RateLimiterContext.check_and_consume` MUST be called synchronously with the step's own token estimate/delta, never the cumulative running total; `release` MUST return unused reservation.
+14. `Agent.run()`'s ordinary loop MUST reserve at least one turn (`max(budget.max_turns - 1, 0)`) for a final, tools-disabled answer, given via `_final_turn_and_finish` on budget or timeout exhaustion, with no repair attempted there.
+15. `output_schema`, where set, MUST be bound as structured output on every ordinary turn (alongside whatever tools are offered), not only on a dedicated final turn.
+16. `ConversationHistory.summarize()` MUST retrieve via `get_all`, render via `serialize_for_prompt`/`history_formatter`, and generate via the given `model_provider`, returning `"No conversation history to summarize."` without a provider call when history is empty.
+17. A run's in-flight state (`_RunState`: trace, steps, token usage) MUST be scoped to that `run()` call and MUST NOT be conflated with `ConversationHistory`.
+18. Exhausting transport-level retries (`RetryableError`) MUST surface, uncaught by anything more specific, as `status="error"`, `error.code="AGENT_ERROR"`.
+19. Multiple `invoke_skill`/tool calls in one round MUST be dispatched sequentially, in the order the provider returned them, and MUST appear in `messages`/`steps` in that same order — this implementation does not dispatch a round concurrently.
+20. `messages` MUST be append-only, ordered by dispatch, and MUST NOT be reordered, deduplicated, or removed — including failed dispatches and failed bound completions.

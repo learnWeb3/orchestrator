@@ -47,7 +47,7 @@ async def test_execute_calls_through_to_server():
 
         result = await add_tool.execute(validated)
 
-        assert result == 5
+        assert result == {"result": 5}
 
 
 async def test_execute_raises_on_server_error():

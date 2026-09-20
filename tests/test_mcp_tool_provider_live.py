@@ -48,8 +48,9 @@ async def test_calls_real_deepwiki_tool_for_a_known_repo(deepwiki_provider):
 
     result = await tool.execute(validated)
 
-    assert isinstance(result, str)
-    assert "fastmcp" in result.lower()
+    assert isinstance(result, dict)
+    assert isinstance(result["result"], str)
+    assert "fastmcp" in result["result"].lower()
 
 
 async def test_agent_round_trip_through_real_mcp_server(deepwiki_provider):

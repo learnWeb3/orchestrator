@@ -20,6 +20,16 @@ from pydantic import BaseModel, ConfigDict, create_model
 
 from .base import BaseTool
 
+
+class _MCPPermissiveOutput(BaseModel):
+    """Fallback `output_schema` for a remote tool with no declared (or
+    non-object-rooted) output schema -- accepts anything. `result` carries
+    the value when `MCPTool.execute` had to wrap a non-dict return."""
+
+    model_config = ConfigDict(extra="allow")
+
+    result: Any = None
+
 _JSON_SCHEMA_TYPE_MAP: Dict[str, type] = {
     "string": str,
     "integer": int,
@@ -39,15 +49,16 @@ def _pascal_case(value: str) -> str:
     return "".join(part.capitalize() for part in parts if part) or "Tool"
 
 
-def _json_schema_to_model(name: str, schema: Dict[str, Any]) -> Type[BaseModel]:
-    """Build a lenient Pydantic model from an MCP tool's raw JSON input schema.
+def _json_schema_to_model(name: str, schema: Dict[str, Any], suffix: str = "Input") -> Type[BaseModel]:
+    """Build a lenient Pydantic model from an MCP tool's raw JSON schema
+    (input or, with `suffix="Output"`, output).
 
     Validation is intentionally loose (best-effort field types, extra keys
     allowed) -- the model's job is to let `Agent.invoke_tool` construct and
-    pass through arguments, not to re-implement JSON Schema validation.
-    `model_json_schema()` is overridden to return the original schema verbatim
-    so providers (e.g. `OpenAIProvider`) see the server's real schema rather
-    than a lossy, regenerated one.
+    pass through arguments/results, not to re-implement JSON Schema
+    validation. `model_json_schema()` is overridden to return the original
+    schema verbatim so providers (e.g. `OpenAIProvider`) see the server's
+    real schema rather than a lossy, regenerated one.
     """
     properties: Dict[str, Any] = schema.get("properties", {}) or {}
     required = set(schema.get("required", []) or [])
@@ -61,7 +72,7 @@ def _json_schema_to_model(name: str, schema: Dict[str, Any]) -> Type[BaseModel]:
         else:
             fields[field_name] = (Optional[field_type], None)
 
-    class_name = _pascal_case(name) + "Input"
+    class_name = _pascal_case(name) + suffix
     base_model = create_model(
         class_name,
         __config__=ConfigDict(extra="allow"),
@@ -92,10 +103,12 @@ class MCPTool(BaseTool):
         input_schema: Type[BaseModel],
         provider: "MCPToolProvider",
         remote_name: Optional[str] = None,
+        output_schema: Type[BaseModel] = _MCPPermissiveOutput,
     ) -> None:
         self.name = name
         self.description = description
         self.input_schema = input_schema
+        self.output_schema = output_schema
         self._provider = provider
         self._remote_name = remote_name or name
 
@@ -103,7 +116,9 @@ class MCPTool(BaseTool):
         """Call the underlying MCP tool with the validated arguments.
 
         Raises on failure; `Agent.invoke_tool` catches and formats the error
-        using `error_schema`.
+        using `error_schema`. Always returns a dict, so the result satisfies
+        `output_schema` -- a remote tool that returns a bare scalar/string is
+        wrapped as `{"result": <value>}`.
         """
         arguments = input.model_dump(exclude_none=True)
         try:
@@ -118,12 +133,15 @@ class MCPTool(BaseTool):
             ) from exc
 
         if result.data is not None:
-            return result.data
-        if result.structured_content is not None:
-            return result.structured_content
-        return "\n".join(
-            block.text for block in result.content if getattr(block, "type", None) == "text"
-        )
+            raw = result.data
+        elif result.structured_content is not None:
+            raw = result.structured_content
+        else:
+            raw = "\n".join(
+                block.text for block in result.content if getattr(block, "type", None) == "text"
+            )
+
+        return raw if isinstance(raw, dict) else {"result": raw}
 
 
 class MCPToolProvider:
@@ -221,14 +239,21 @@ class MCPToolProvider:
                 or getattr(mcp_tool, "inputSchema", None)
                 or {}
             )
+            raw_output_schema = getattr(mcp_tool, "output_schema", None) or getattr(
+                mcp_tool, "outputSchema", None
+            )
             exposed_name = (
                 f"{self._name_prefix}.{mcp_tool.name}" if self._name_prefix else mcp_tool.name
             )
             input_model = _json_schema_to_model(exposed_name, raw_schema)
+            output_model: Type[BaseModel] = _MCPPermissiveOutput
+            if isinstance(raw_output_schema, dict) and raw_output_schema.get("type") == "object":
+                output_model = _json_schema_to_model(exposed_name, raw_output_schema, suffix="Output")
             discovered[exposed_name] = MCPTool(
                 name=exposed_name,
                 description=mcp_tool.description or "",
                 input_schema=input_model,
+                output_schema=output_model,
                 provider=self,
                 remote_name=mcp_tool.name,
             )
